@@ -197,10 +197,10 @@ const (
 )
 
 // New creates a linuxNetwork object
-func New() NetworkAPIs {
+func New() (NetworkAPIs, error) {
 	connmark, err := NewConnmark(getVethPrefixName(), getConnmark())
 	if err != nil {
-		log.Fatalf("Failed to detect iptable mode vpc-cni is using: %v", err)
+		return nil, fmt.Errorf("failed to detect iptables mode vpc-cni is using: %w", err)
 	}
 
 	return &linuxNetwork{
@@ -222,7 +222,7 @@ func New() NetworkAPIs {
 			return ipt, err
 		},
 		connmark: connmark,
-	}
+	}, nil
 }
 
 // find out the primary interface name

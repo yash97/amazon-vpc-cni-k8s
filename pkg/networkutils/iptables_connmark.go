@@ -88,10 +88,13 @@ func (c *iptablesConnmark) Setup(exemptCIDRs []string) error {
 	return nil
 }
 
+// cleanupNFTStaleRules removes the "aws-cni" nftables table that an earlier
+// nftables-backed install may have left behind.
 func cleanupNFTStaleRules() error {
 	client, err := nft.New()
 	if err != nil {
-		return err
+		log.Warnf("skipping nft stale-rule cleanup: nf_tables subsystem unavailable: %v", err)
+		return nil
 	}
 	client.DelTable(&nftables.Table{
 		Family: nftables.TableFamilyIPv4,

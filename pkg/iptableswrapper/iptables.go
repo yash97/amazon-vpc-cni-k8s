@@ -136,9 +136,17 @@ func GetIptablesMode() (IptablesMode, error) {
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("iptables --version failed: %w, stderr: %s", err, stderr.String())
 	}
+	return parseIptablesMode(out.String()), nil
+}
 
-	if strings.Contains(out.String(), string(IptablesModeNFT)) {
-		return IptablesModeNFT, nil
+// parseIptablesMode interprets the output of `iptables --version`. Real
+// `iptables --version` output looks like:
+// eg:
+//	iptables v1.8.10 (nf_tables)
+//	iptables v1.8.7 (legacy)
+func parseIptablesMode(versionOutput string) IptablesMode {
+	if strings.Contains(versionOutput, string(IptablesModeLegacy)) {
+		return IptablesModeLegacy
 	}
-	return IptablesModeLegacy, nil
+	return IptablesModeNFT
 }

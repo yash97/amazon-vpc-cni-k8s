@@ -29,7 +29,7 @@ Creates EKS cluster with mixed OS nodes and runs SNAT/kube-proxy integration tes
 
 Options:
     -n, --name NAME         Cluster name (default: cni-mixed-os-RANDOM)
-    -v, --version VERSION   Kubernetes version (default: 1.31)
+    -v, --version VERSION   Kubernetes version (default: 1.33)
     -f, --ip-family FAMILY  IPv4 or IPv6 (default: IPv4)
     -r, --region REGION     AWS region (default: us-west-2)
     --no-provision          Skip cluster creation (use existing)
@@ -38,7 +38,7 @@ Options:
     -h, --help              Show this help
 
 Example:
-    $0 --name my-test --version 1.31 --ip-family IPv4
+    $0 --name my-test --version 1.33 --ip-family IPv4
     $0 --kubeconfig ~/.kube/config --no-provision --no-deprovision
 EOF
     exit 0

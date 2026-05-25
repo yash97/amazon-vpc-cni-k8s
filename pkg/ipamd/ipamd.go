@@ -398,7 +398,11 @@ func New(ctx context.Context, k8sClient client.Client, withApiServer bool) (*IPA
 	prometheusRegister()
 	c := &IPAMContext{}
 	c.k8sClient = k8sClient
-	c.networkClient = networkutils.New()
+	networkClient, err := networkutils.New()
+	if err != nil {
+		return nil, errors.Wrap(err, "ipamd: failed to initialize network utils")
+	}
+	c.networkClient = networkClient
 	c.useCustomNetworking = UseCustomNetworkCfg()
 	c.manageENIsNonScheduleable = ManageENIsOnNonSchedulableNode()
 	c.useSubnetDiscovery = UseSubnetDiscovery()

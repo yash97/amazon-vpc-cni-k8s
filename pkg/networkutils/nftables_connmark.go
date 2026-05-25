@@ -35,7 +35,7 @@ const (
 	nftBaseChainName = "nat-prerouting"
 	nftChainName     = "snat-mark"
 	// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/rtnetlink.h#L264
-	rtn_local = uint32(2)
+	rtnLocal = uint32(2)
 )
 
 // Connmark manages connection marking rules for SNAT.
@@ -259,10 +259,12 @@ func (c *nftConnmark) ensureBaseChainRules(table *nftables.Table, baseChain, tar
 	allRulesPresent := fibRule != nil && jumpRule != nil && restoreRule != nil
 	ordered := allRulesPresent && fibRule.Handle < jumpRule.Handle && jumpRule.Handle < restoreRule.Handle
 	if allRulesPresent && ordered && len(staleRules) == 0 {
+		log.Debugf("base chain %s: all 3 desired rules present in correct order; no reconciliation needed", baseChain.Name)
 		return nil
 	}
 	var errs []error
 	if allRulesPresent && ordered {
+		log.Debugf("base chain %s: 3 desired rules present and ordered, but %d stale rule(s) found; deleting stale rules", baseChain.Name, len(staleRules))
 		for _, r := range staleRules {
 			if err := c.nft.DelRule(r); err != nil {
 				errs = append(errs, fmt.Errorf("failed to delete stale rule with handle %d: %w", r.Handle, err))
@@ -271,6 +273,8 @@ func (c *nftConnmark) ensureBaseChainRules(table *nftables.Table, baseChain, tar
 		return errors.Join(errs...)
 	}
 
+	log.Debugf("base chain %s: rules missing or out of order (fib=%v jump=%v restore=%v ordered=%v stale=%d); flushing and reinstalling all 3 rules",
+		baseChain.Name, fibRule != nil, jumpRule != nil, restoreRule != nil, ordered, len(staleRules))
 	c.nft.FlushChain(baseChain)
 	c.addFibLocalReturnRule(table, baseChain)
 	c.addJumpRule(table, baseChain, targetChain)
@@ -290,7 +294,7 @@ func isFibLocalReturnRule(rule *nftables.Rule) bool {
 		}
 		if cmp, ok := e.(*expr.Cmp); ok && cmp.Op == expr.CmpOpEq && len(cmp.Data) == 4 && cmp.Register == 1 {
 			val := binaryutil.NativeEndian.Uint32(cmp.Data)
-			if val == rtn_local {
+			if val == rtnLocal {
 				hasCmpLocal = true
 			}
 		}
@@ -317,7 +321,7 @@ func (c *nftConnmark) addFibLocalReturnRule(table *nftables.Table, chain *nftabl
 			&expr.Cmp{
 				Op:       expr.CmpOpEq,
 				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(rtn_local),
+				Data:     binaryutil.NativeEndian.PutUint32(rtnLocal),
 			},
 			&expr.Verdict{Kind: expr.VerdictReturn},
 		},
@@ -407,7 +411,7 @@ func (c *nftConnmark) ensureConnmarkChainRules(table *nftables.Table, chain *nft
 
 	// Ensure set-mark rule exists (AddRule appends to end)
 	if setMarkRule == nil {
-		c.addSetMarkRule(table, chain, c.mark)
+		c.addSetMarkRule(table, chain)
 	}
 
 	return errors.Join(errs...)
@@ -425,14 +429,17 @@ func (c *nftConnmark) Cleanup() error {
 	return nil
 }
 
+// getDesiredPriority returns -90 so our chain runs after kube-proxy's DNAT
+// (kube-proxy uses the standard dstnat priority of -100, and lower priority
+// runs first). Marking after DNAT means we see the rewritten PodIP, not the
+// original ClusterIP.
 func (c *nftConnmark) getDesiredPriority() nftables.ChainPriority {
-	// This is -90 right now, as default Kubeproxy priority is -100, and we want to run over rules after Kube-proxy DNAT's packet.
 	const priority nftables.ChainPriority = -90
 	return priority
 }
 
 func isBaseChainConfigCorrect(chain *nftables.Chain, desiredPriority nftables.ChainPriority) bool {
-	return chain.Hooknum == nftables.ChainHookPrerouting &&
+	return chain.Hooknum != nil && *chain.Hooknum == *nftables.ChainHookPrerouting &&
 		chain.Priority != nil && *chain.Priority == desiredPriority &&
 		chain.Policy != nil && *chain.Policy == nftables.ChainPolicyAccept &&
 		chain.Type == nftables.ChainTypeNAT
@@ -447,6 +454,11 @@ func (c *nftConnmark) getConnmarkChain(table *nftables.Table) (*nftables.Chain, 
 }
 
 // addJumpRule adds: nft add rule ip aws-cni nat-prerouting iifname "eni*" counter jump snat-mark
+//
+// Data is the bare prefix ("eni"), not "eni*": kernel memcmp's only
+// len(NFTA_CMP_DATA) bytes against the iifname register, so 3 bytes of "eni"
+// matches "eniXXXX". See nft_cmp_eval `memcmp(..., priv->len)`:
+// https://github.com/torvalds/linux/blob/v6.6/net/netfilter/nft_cmp.c#L33
 func (c *nftConnmark) addJumpRule(table *nftables.Table, baseChain, targetChain *nftables.Chain) {
 	c.nft.AddRule(&nftables.Rule{
 		Table: table,
@@ -488,7 +500,9 @@ func isJumpRule(rule *nftables.Rule, targetChain, vethPrefix string) bool {
 		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeyIIFNAME && m.Register == 1 {
 			hasMetaKeyIIFNAME = true
 		}
-		if cmp, ok := e.(*expr.Cmp); ok && bytes.Equal(cmp.Data, []byte(vethPrefix)) {
+		if cmp, ok := e.(*expr.Cmp); ok &&
+			cmp.Op == expr.CmpOpEq && cmp.Register == 1 &&
+			bytes.Equal(cmp.Data, []byte(vethPrefix)) {
 			hasIFaceMatch = true
 		}
 		if _, ok := e.(*expr.Counter); ok {
@@ -501,6 +515,9 @@ func isJumpRule(rule *nftables.Rule, targetChain, vethPrefix string) bool {
 	return hasIFaceMatch && hasJump && hasCounter && hasMetaKeyIIFNAME
 }
 
+// isRestoreRule recognises a rule shaped like:
+//
+//	counter ct mark & <mark> meta mark set ct mark & <mark>
 func isRestoreRule(rule *nftables.Rule, mark uint32) bool {
 	hasCounter := false
 	hasCtLoad := false
@@ -511,42 +528,65 @@ func isRestoreRule(rule *nftables.Rule, mark uint32) bool {
 		if _, ok := e.(*expr.Counter); ok {
 			hasCounter = true
 		}
-		if ct, ok := e.(*expr.Ct); ok && ct.Key == expr.CtKeyMARK && !ct.SourceRegister {
+		// Ct load: read ct mark into reg 1 (SourceRegister=false ⇒ Register is dest)
+		if ct, ok := e.(*expr.Ct); ok &&
+			ct.Key == expr.CtKeyMARK && !ct.SourceRegister && ct.Register == 1 {
 			hasCtLoad = true
 		}
-		// Restore rule uses AND: (ct_mark & mark) ^ 0x00, so Xor must be zero
-		if bw, ok := e.(*expr.Bitwise); ok && bytes.Equal(bw.Mask, markBytes) && bytes.Equal(bw.Xor, []byte{0, 0, 0, 0}) {
+		// Restore rule uses AND: (ct_mark & mark) ^ 0x00, so Xor must be zero.
+		if bw, ok := e.(*expr.Bitwise); ok &&
+			bw.SourceRegister == 1 && bw.DestRegister == 1 && bw.Len == 4 &&
+			bytes.Equal(bw.Mask, markBytes) && bytes.Equal(bw.Xor, []byte{0, 0, 0, 0}) {
 			hasBitwise = true
 		}
-		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeyMARK && m.SourceRegister {
+		// Meta store: write reg 1 into fwmark (SourceRegister=true ⇒ Register is src)
+		if m, ok := e.(*expr.Meta); ok &&
+			m.Key == expr.MetaKeyMARK && m.SourceRegister && m.Register == 1 {
 			hasMetaStore = true
 		}
 	}
 	return hasCounter && hasCtLoad && hasBitwise && hasMetaStore
 }
 
+// extractCIDRFromRule recovers the daddr CIDR from a rule shaped like:
+//
+//	counter ip daddr <cidr> return
 func extractCIDRFromRule(rule *nftables.Rule) string {
 	var ip net.IP
 	var mask net.IPMask
-	hasPayload := false
+	hasCounter := false
+	hasDstPayload := false
 	hasReturn := false
 
 	for _, e := range rule.Exprs {
-		if _, ok := e.(*expr.Payload); ok {
-			hasPayload = true
+		if _, ok := e.(*expr.Counter); ok {
+			hasCounter = true
+		}
+		if p, ok := e.(*expr.Payload); ok &&
+			p.Base == expr.PayloadBaseNetworkHeader &&
+			p.Offset == 16 && p.Len == 4 &&
+			p.DestRegister == 1 {
+			hasDstPayload = true
 		}
 		if v, ok := e.(*expr.Verdict); ok && v.Kind == expr.VerdictReturn {
 			hasReturn = true
 		}
-		if bw, ok := e.(*expr.Bitwise); ok && len(bw.Mask) == 4 {
+		// Bitwise must read and write register 1 (the same register Payload
+		// loaded the dst IP into, and that Cmp will read), with Len 4 (IPv4
+		// address width) and zero Xor — i.e. plain AND with the netmask.
+		if bw, ok := e.(*expr.Bitwise); ok &&
+			bw.SourceRegister == 1 && bw.DestRegister == 1 &&
+			bw.Len == 4 && len(bw.Mask) == 4 &&
+			bytes.Equal(bw.Xor, []byte{0, 0, 0, 0}) {
 			mask = net.IPMask(bw.Mask)
 		}
-		if cmp, ok := e.(*expr.Cmp); ok && cmp.Op == expr.CmpOpEq && len(cmp.Data) == 4 {
+		if cmp, ok := e.(*expr.Cmp); ok &&
+			cmp.Op == expr.CmpOpEq && cmp.Register == 1 && len(cmp.Data) == 4 {
 			ip = net.IP(cmp.Data)
 		}
 	}
 
-	if ip == nil || mask == nil || !hasPayload || !hasReturn {
+	if ip == nil || mask == nil || !hasCounter || !hasDstPayload || !hasReturn {
 		return ""
 	}
 	ones, bits := mask.Size()
@@ -556,30 +596,36 @@ func extractCIDRFromRule(rule *nftables.Rule) string {
 	return fmt.Sprintf("%s/%d", ip.String(), ones)
 }
 
+// isSetMarkRule recognises a rule shaped like:
+//
+//	counter ct mark set ct mark | <mark>
 func isSetMarkRule(rule *nftables.Rule, mark uint32) bool {
 	hasCounter := false
 	hasCtLoad := false
 	hasBitwise := false
 	hasCtStore := false
 	markBytes := binaryutil.NativeEndian.PutUint32(mark)
+	maskBytes := binaryutil.NativeEndian.PutUint32(^mark)
 
 	for _, e := range rule.Exprs {
 		if _, ok := e.(*expr.Counter); ok {
 			hasCounter = true
 		}
-		if ct, ok := e.(*expr.Ct); ok && ct.Key == expr.CtKeyMARK {
+		// Ct load: ct mark → reg 1 (SourceRegister=false ⇒ Register is dest).
+		// Ct store: reg 1 → ct mark (SourceRegister=true ⇒ Register is src).
+		if ct, ok := e.(*expr.Ct); ok && ct.Key == expr.CtKeyMARK && ct.Register == 1 {
 			if ct.SourceRegister {
 				hasCtStore = true
 			} else {
 				hasCtLoad = true
 			}
 		}
-		// ct mark | 0x80 uses Mask=^mark, Xor=mark (OR operation)
-		if bw, ok := e.(*expr.Bitwise); ok {
-			maskBytes := binaryutil.NativeEndian.PutUint32(^mark)
-			if bytes.Equal(bw.Xor, markBytes) && bytes.Equal(bw.Mask, maskBytes) {
-				hasBitwise = true
-			}
+		// ct mark | mark uses Mask=^mark, Xor=mark (OR via bitwise identity:
+		// (x & ~m) ^ m == x | m). Pipeline runs reg 1 → reg 1 with Len 4.
+		if bw, ok := e.(*expr.Bitwise); ok &&
+			bw.SourceRegister == 1 && bw.DestRegister == 1 && bw.Len == 4 &&
+			bytes.Equal(bw.Xor, markBytes) && bytes.Equal(bw.Mask, maskBytes) {
+			hasBitwise = true
 		}
 	}
 	return hasCtLoad && hasBitwise && hasCtStore && hasCounter
@@ -590,9 +636,9 @@ func isSetMarkRule(rule *nftables.Rule, mark uint32) bool {
 // Equivalent to iptables: -j CONNMARK --set-xmark 0x80/0x80 (OR operation).
 // nftables bitwise computes: result = (reg & Mask) ^ Xor
 // With Mask=^mark and Xor=mark: (ct_mark & ~0x80) ^ 0x80 = ct_mark | 0x80
-func (c *nftConnmark) addSetMarkRule(table *nftables.Table, chain *nftables.Chain, mark uint32) {
-	markBytes := binaryutil.NativeEndian.PutUint32(mark)
-	maskBytes := binaryutil.NativeEndian.PutUint32(^mark)
+func (c *nftConnmark) addSetMarkRule(table *nftables.Table, chain *nftables.Chain) {
+	markBytes := binaryutil.NativeEndian.PutUint32(c.mark)
+	maskBytes := binaryutil.NativeEndian.PutUint32(^c.mark)
 	c.nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
