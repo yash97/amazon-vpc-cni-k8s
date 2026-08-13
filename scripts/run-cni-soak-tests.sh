@@ -393,6 +393,27 @@ echo "Metric assertion inputs: $METRIC_ASSERT_INPUTS_FILE"
 "${KUBECTL[@]}" version --client
 "${KUBECTL[@]}" cluster-info
 
+# --- NPA enforcement bootstrap (opt-in, for environments where the helm chart
+# alone cannot yield a working enforcing node agent) ---------------------------
+# SOAK_NPA_IMAGE: full image ref to patch onto the aws-eks-nodeagent container.
+#   Needed when image.containerRegistry has no aws-network-policy-agent repo.
+# SOAK_APPLY_POLICYENDPOINTS_CRD=true: apply the policyendpoints CRD from the
+#   aws-network-policy-agent repo if the cluster lacks it. The agent's
+#   controller exits(2) without it in enforcing mode.
+if [[ "${SOAK_APPLY_POLICYENDPOINTS_CRD:-false}" == "true" ]] && \
+   ! "${KUBECTL[@]}" get crd policyendpoints.networking.k8s.aws >/dev/null 2>&1; then
+  echo "Applying policyendpoints CRD"
+  "${KUBECTL[@]}" apply -f \
+    "https://raw.githubusercontent.com/aws/aws-network-policy-agent/main/config/crd/bases/networking.k8s.aws_policyendpoints.yaml"
+fi
+if [[ -n "${SOAK_NPA_IMAGE:-}" ]]; then
+  echo "Patching aws-eks-nodeagent image to $SOAK_NPA_IMAGE"
+  "${KUBECTL[@]}" set image ds/aws-node -n kube-system "aws-eks-nodeagent=$SOAK_NPA_IMAGE"
+  "${KUBECTL[@]}" rollout status ds/aws-node -n kube-system \
+    --timeout "${SOAK_CONVERGENCE_TIMEOUT_SECONDS}s"
+fi
+# ------------------------------------------------------------------------------
+
 # ReuseCluster leaves the cluster alive. Remove only this script's namespace so
 # retries are idempotent and unrelated workloads remain untouched.
 if "${KUBECTL[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1; then
