@@ -1,0 +1,182 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dataplane-node-evidence
+  namespace: monitoring
+data:
+  serve.sh: |
+    #!/bin/sh
+    set -eu
+
+    output_dir=/www
+    bpf_root=/host-bpf/globals/aws
+
+    render_metrics() {
+      output_tmp="${output_dir}/metrics.tmp"
+      containerd_raw="${output_dir}/containerd.raw"
+      : >"$output_tmp"
+
+      cat >>"$output_tmp" <<'EOF'
+    # HELP dataplane_npa_bpf_snapshot_success Whether the node bpffs snapshot was readable.
+    # TYPE dataplane_npa_bpf_snapshot_success gauge
+    EOF
+      if [ -d "${bpf_root}/maps" ] && [ -d "${bpf_root}/programs" ]; then
+        printf 'dataplane_npa_bpf_snapshot_success 1\n' >>"$output_tmp"
+        for path in "${bpf_root}/programs"/*; do
+          [ "$path" = "${bpf_root}/programs/*" ] && break
+          pin_hash=$(printf 'program:%s' "${path##*/}" | sha256sum | awk '{print $1}')
+          printf 'dataplane_npa_bpf_pin_present{kind="program",pin_hash="%s"} 1\n' \
+            "$pin_hash" >>"$output_tmp"
+        done
+        for path in "${bpf_root}/maps"/*; do
+          [ "$path" = "${bpf_root}/maps/*" ] && break
+          pin_hash=$(printf 'map:%s' "${path##*/}" | sha256sum | awk '{print $1}')
+          printf 'dataplane_npa_bpf_pin_present{kind="map",pin_hash="%s"} 1\n' \
+            "$pin_hash" >>"$output_tmp"
+        done
+      else
+        printf 'dataplane_npa_bpf_snapshot_success 0\n' >>"$output_tmp"
+      fi
+
+      cat >>"$output_tmp" <<'EOF'
+    # HELP dataplane_containerd_scrape_success Whether the node-local containerd metrics endpoint was readable.
+    # TYPE dataplane_containerd_scrape_success gauge
+    EOF
+      if wget -qO "$containerd_raw" -T 5 http://127.0.0.1:1338/v1/metrics; then
+        printf 'dataplane_containerd_scrape_success 1\n' >>"$output_tmp"
+        grep -E \
+          '^(# (HELP|TYPE) )?containerd_cri_network_plugin_operations_(total_total|errors_total|duration_seconds_seconds(_bucket|_sum|_count)?)([ {]|$)' \
+          "$containerd_raw" >>"$output_tmp" || true
+      else
+        printf 'dataplane_containerd_scrape_success 0\n' >>"$output_tmp"
+      fi
+
+      cat >>"$output_tmp" <<EOF
+    # HELP dataplane_node_evidence_refresh_timestamp_seconds Unix time of the last complete node-evidence refresh.
+    # TYPE dataplane_node_evidence_refresh_timestamp_seconds gauge
+    dataplane_node_evidence_refresh_timestamp_seconds $(date +%s)
+    EOF
+      mv "$output_tmp" "${output_dir}/metrics"
+    }
+
+    mkdir -p "$output_dir"
+    render_metrics
+    while sleep 10; do
+      render_metrics
+    done &
+    exec httpd -f -p 19100 -h "$output_dir"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dataplane-node-evidence
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: dataplane-node-evidence
+  template:
+    metadata:
+      labels:
+        app: dataplane-node-evidence
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+      terminationGracePeriodSeconds: 0
+      containers:
+      - name: evidence
+        image: public.ecr.aws/docker/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+        command:
+        - /bin/sh
+        - /scripts/serve.sh
+        ports:
+        - name: metrics
+          containerPort: 19100
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: metrics
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 30
+        resources:
+          requests:
+            cpu: 5m
+            memory: 8Mi
+          limits:
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+          readOnly: true
+        - name: output
+          mountPath: /www
+        - name: host-bpffs
+          mountPath: /host-bpf
+          readOnly: true
+          mountPropagation: HostToContainer
+      volumes:
+      - name: script
+        configMap:
+          name: dataplane-node-evidence
+          defaultMode: 0555
+      - name: output
+        emptyDir: {}
+      - name: host-bpffs
+        hostPath:
+          path: /sys/fs/bpf
+          type: Directory
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: dataplane-node-evidence
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - monitoring
+  selector:
+    matchLabels:
+      app: dataplane-node-evidence
+  podMetricsEndpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s
+    relabelings:
+    - sourceLabels:
+      - __meta_kubernetes_pod_node_name
+      targetLabel: node
+    metricRelabelings:
+    - sourceLabels:
+      - __name__
+      regex: (dataplane_node_evidence_.*|dataplane_npa_bpf_.*|dataplane_containerd_.*|containerd_cri_network_plugin_operations_.*)
+      action: keep
+    - sourceLabels:
+      - __name__
+      regex: dataplane_node_evidence_.*
+      targetLabel: component
+      replacement: node-evidence
+    - sourceLabels:
+      - __name__
+      regex: (dataplane_containerd_.*|containerd_.*)
+      targetLabel: component
+      replacement: containerd
+    - sourceLabels:
+      - __name__
+      regex: dataplane_npa_bpf_.*
+      targetLabel: component
+      replacement: npa-bpf

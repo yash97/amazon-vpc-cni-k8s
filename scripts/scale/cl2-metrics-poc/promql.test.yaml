@@ -1,0 +1,211 @@
+rule_files: []
+evaluation_interval: 15s
+tests:
+- interval: 15s
+  input_series:
+  - series: 'up{component="ipamd",node="node-a"}'
+    values: '1 1 1 1 1'
+  - series: 'up{component="ipamd",node="node-b"}'
+    values: '1 1 1 1 1'
+  - series: 'process_start_time_seconds{component="ipamd",node="node-a"}'
+    values: '100 100 100 100 100'
+  - series: 'process_start_time_seconds{component="ipamd",node="node-b"}'
+    values: '200 200 200 200 200'
+  - series: 'container_memory_working_set_bytes{component="ipamd",node="node-a"}'
+    values: '104857600 125829120 157286400 115343360 110100480'
+  - series: 'container_memory_working_set_bytes{component="ipamd",node="node-b"}'
+    values: '209715200 241172480 272629760 251658240 246415360'
+  - series: 'dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence",node="node-a"}'
+    values: '0 15 30 45 60'
+  - series: 'dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence",node="node-b"}'
+    values: '0 15 30 45 60'
+  - series: 'awscni_ec2api_req_count{component="ipamd",node="node-a",fn="AssignPrivateIpAddresses"}'
+    values: '0 4 8 12 16'
+  - series: 'awscni_ec2api_req_count{component="ipamd",node="node-b",fn="AssignPrivateIpAddresses"}'
+    values: '0 3 6 9 12'
+  - series: 'awscni_ec2api_error_count{component="ipamd",node="node-a",fn="AssignPrivateIpAddresses"}'
+    values: '0 0 0 0 0'
+  - series: 'awscni_ec2api_error_count{component="ipamd",node="node-b",fn="AssignPrivateIpAddresses"}'
+    values: '0 0 0 0 0'
+  - series: 'up{component="npa",node="node-a"}'
+    values: '1 1 1 1 1'
+  - series: 'up{component="npa",node="node-b"}'
+    values: '1 1 1 1 1'
+  - series: 'process_start_time_seconds{component="npa",node="node-a"}'
+    values: '300 300 300 300 300'
+  - series: 'process_start_time_seconds{component="npa",node="node-b"}'
+    values: '400 400 400 400 400'
+  - series: 'container_memory_working_set_bytes{component="npa",node="node-a"}'
+    values: '104857600 104857600 104857600 104857600 230686720 241172480 125829120 125829120 125829120'
+  - series: 'container_memory_working_set_bytes{component="npa",node="node-b"}'
+    values: '209715200 209715200 209715200 209715200 335544320 346030080 230686720 230686720 230686720'
+  - series: 'awsnodeagent_policy_setup_latency_ms_count{component="npa",node="node-a"}'
+    values: '0 10 20 30 40'
+  - series: 'awsnodeagent_policy_setup_latency_ms_count{component="npa",node="node-b"}'
+    values: '0 10 20 30 40'
+  - series: 'awsnodeagent_policy_teardown_latency_ms_count{component="npa",node="node-a"}'
+    values: '0 5 10 15 20'
+  - series: 'awsnodeagent_policy_teardown_latency_ms_count{component="npa",node="node-b"}'
+    values: '0 5 10 15 20'
+  promql_expr_test:
+  - expr: 'abs((count(count by (node) (up{component="ipamd"} == 1)) or vector(0)) - 2)'
+    eval_time: 1m
+    exp_samples:
+    - value: 0
+  - expr: 'abs((count(count by (node) (up{component="ipamd"} == 1)) or vector(0)) - 3)'
+    eval_time: 1m
+    exp_samples:
+    - value: 1
+  - expr: 'max by (node) (up{component="ipamd"})'
+    eval_time: 1m
+    exp_samples:
+    - labels: '{node="node-a"}'
+      value: 1
+    - labels: '{node="node-b"}'
+      value: 1
+  - expr: 'changes(process_start_time_seconds{component="ipamd"}[1m])'
+    eval_time: 1m
+    exp_samples:
+    - labels: '{component="ipamd",node="node-a"}'
+      value: 0
+    - labels: '{component="ipamd",node="node-b"}'
+      value: 0
+  - expr: 'clamp_min(1 - max by (node) (up{component="ipamd"}), 0)'
+    eval_time: 1m
+    exp_samples:
+    - labels: '{node="node-a"}'
+      value: 0
+    - labels: '{node="node-b"}'
+      value: 0
+  - expr: 'abs((count(count by (node) (dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence"})) or vector(0)) - 2)'
+    eval_time: 1m
+    exp_samples:
+    - value: 0
+  - expr: 'clamp_min(time() - max by (node) (dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence"}) - 45, 0)'
+    eval_time: 1m
+    exp_samples:
+    - labels: '{node="node-a"}'
+      value: 0
+    - labels: '{node="node-b"}'
+      value: 0
+  - expr: 'clamp_min(1 - sum(increase(awscni_ec2api_req_count{component="ipamd"}[1m])), 0)'
+    eval_time: 1m
+    exp_samples:
+    - value: 0
+  - expr: 'sum(increase(awscni_ec2api_error_count{component="ipamd"}[1m])) or vector(0)'
+    eval_time: 1m
+    exp_samples:
+    - value: 0
+  - expr: 'clamp_min(80 - sum(increase(awsnodeagent_policy_setup_latency_ms_count{component="npa"}[1m])), 0)'
+    eval_time: 1m
+    exp_samples:
+    - value: 0
+  - expr: 'clamp_min(40 - sum(increase(awsnodeagent_policy_teardown_latency_ms_count{component="npa"}[1m])), 0)'
+    eval_time: 1m
+    exp_samples:
+    - value: 0
+  - expr: 'max by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s])) - (max by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s] offset 1m30s)) + clamp_min(max by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s] offset 1m30s)) * 0.10, 33554432))'
+    eval_time: 2m
+    exp_samples:
+    - labels: '{node="node-a"}'
+      value: -12582912
+    - labels: '{node="node-b"}'
+      value: -12582912
+  - expr: 'abs((count(count by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s] offset 1m30s))) or vector(0)) - 2)'
+    eval_time: 2m
+    exp_samples:
+    - value: 0
+- interval: 15s
+  input_series:
+  - series: 'up{component="ipamd",node="node-a"}'
+    values: '1 1 1 1 1'
+  promql_expr_test:
+  - expr: 'abs((count(count by (node) (up{component="ipamd"} == 1)) or vector(0)) - 2)'
+    eval_time: 1m
+    exp_samples:
+    - value: 1
+- interval: 15s
+  promql_expr_test:
+  - expr: 'abs((count(count by (node) (up{component="ipamd"} == 1)) or vector(0)) - 2)'
+    eval_time: 1m
+    exp_samples:
+    - value: 2
+- interval: 15s
+  input_series:
+  - series: 'dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence",node="node-a"}'
+    values: '0 0 0 0 0'
+  promql_expr_test:
+  - expr: 'clamp_min(time() - max by (node) (dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence"}) - 45, 0)'
+    eval_time: 1m
+    exp_samples:
+    - labels: '{node="node-a"}'
+      value: 15
+- interval: 15s
+  input_series:
+  - series: 'container_memory_working_set_bytes{component="npa",node="node-a"}'
+    values: '104857600 104857600 104857600 104857600 230686720 241172480 209715200 209715200 209715200'
+  promql_expr_test:
+  - expr: 'max by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s])) - (max by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s] offset 1m30s)) + clamp_min(max by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s] offset 1m30s)) * 0.10, 33554432))'
+    eval_time: 2m
+    exp_samples:
+    - labels: '{node="node-a"}'
+      value: 71303168
+  - expr: 'abs((count(count by (node) (avg_over_time(container_memory_working_set_bytes{component="npa"}[30s] offset 1m30s))) or vector(0)) - 2)'
+    eval_time: 2m
+    exp_samples:
+    - value: 1
+- interval: 15s
+  input_series:
+  - series: 'awscni_ec2api_req_count{component="ipamd",node="node-a",fn="AssignPrivateIpAddresses"}'
+    values: '100 100 100 105 110 110 110'
+  - series: 'awscni_ec2api_error_count{component="ipamd",node="node-a",fn="AssignPrivateIpAddresses"}'
+    values: '_ _ _ 1 1 1 1'
+  promql_expr_test:
+  - expr: 'clamp_min((sum(max_over_time(awscni_ec2api_req_count{component="ipamd"}[30s])) or vector(0)) - (sum(max_over_time(awscni_ec2api_req_count{component="ipamd"}[30s] offset 1m)) or vector(0)), 0)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 10
+  - expr: 'clamp_min((sum(max_over_time(awscni_ec2api_error_count{component="ipamd"}[30s])) or vector(0)) - (sum(max_over_time(awscni_ec2api_error_count{component="ipamd"}[30s] offset 1m)) or vector(0)), 0)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 1
+  - expr: 'clamp_min((sum(max_over_time(awscni_ec2api_error_count{component="ipamd",fn="DeleteNetworkInterface"}[30s])) or vector(0)) - (sum(max_over_time(awscni_ec2api_error_count{component="ipamd",fn="DeleteNetworkInterface"}[30s] offset 1m)) or vector(0)), 0)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 0
+- interval: 15s
+  input_series:
+  - series: 'dataplane_npa_bpf_snapshot_success{component="npa-bpf",node="node-a"}'
+    values: '1 1 1 1 1 1 1'
+  - series: 'dataplane_npa_bpf_snapshot_success{component="npa-bpf",node="node-b"}'
+    values: '1 1 1 1 1 1 1'
+  - series: 'dataplane_npa_bpf_pin_present{component="npa-bpf",node="node-a",kind="map",pin_hash="stable-a"}'
+    values: '1 1 1 1 1 1 1'
+  - series: 'dataplane_npa_bpf_pin_present{component="npa-bpf",node="node-b",kind="program",pin_hash="stable-b"}'
+    values: '1 1 1 1 1 1 1'
+  promql_expr_test:
+  - expr: 'count(max by (node, kind, pin_hash) (max_over_time(dataplane_npa_bpf_pin_present{component="npa-bpf"}[30s])) unless on (node, kind, pin_hash) max by (node, kind, pin_hash) (max_over_time(dataplane_npa_bpf_pin_present{component="npa-bpf"}[30s] offset 1m))) or vector(0)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 0
+  - expr: 'abs((count(count by (node) (min_over_time(dataplane_npa_bpf_snapshot_success{component="npa-bpf"}[30s]) == 1)) or vector(0)) - 2)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 0
+  - expr: 'abs((count(count by (node) (min_over_time(dataplane_npa_bpf_snapshot_success{component="npa-bpf"}[30s] offset 1m) == 1)) or vector(0)) - 2)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 0
+- interval: 15s
+  input_series:
+  - series: 'dataplane_npa_bpf_pin_present{component="npa-bpf",node="node-a",kind="map",pin_hash="baseline-only"}'
+    values: '1 1 1 _ _ _ _'
+  - series: 'dataplane_npa_bpf_pin_present{component="npa-bpf",node="node-a",kind="map",pin_hash="stable"}'
+    values: '1 1 1 1 1 1 1'
+  - series: 'dataplane_npa_bpf_pin_present{component="npa-bpf",node="node-a",kind="map",pin_hash="recovery-only"}'
+    values: '_ _ _ 1 1 1 1'
+  promql_expr_test:
+  - expr: 'count(max by (node, kind, pin_hash) (max_over_time(dataplane_npa_bpf_pin_present{component="npa-bpf"}[30s])) unless on (node, kind, pin_hash) max by (node, kind, pin_hash) (max_over_time(dataplane_npa_bpf_pin_present{component="npa-bpf"}[30s] offset 1m))) or vector(0)'
+    eval_time: 1m30s
+    exp_samples:
+    - value: 1

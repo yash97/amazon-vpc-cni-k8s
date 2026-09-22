@@ -1,0 +1,78 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: aws-node-dataplane
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - kube-system
+  selector:
+    matchLabels:
+      k8s-app: aws-node
+  podMetricsEndpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s
+    relabelings:
+    - sourceLabels:
+      - __meta_kubernetes_pod_node_name
+      targetLabel: node
+    - targetLabel: component
+      replacement: ipamd
+  - port: agentmetrics
+    path: /metrics
+    interval: 15s
+    relabelings:
+    - sourceLabels:
+      - __meta_kubernetes_pod_node_name
+      targetLabel: node
+    - targetLabel: component
+      replacement: npa
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dataplane-kubelet-resource
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - kube-system
+  selector:
+    matchLabels:
+      k8s-app: kubelet
+  endpoints:
+  - port: https-metrics
+    scheme: https
+    path: /metrics/resource
+    interval: 15s
+    tlsConfig:
+      insecureSkipVerify: true
+    bearerTokenSecret:
+      name: prometheus-token
+      key: token
+    relabelings:
+    - sourceLabels:
+      - __meta_kubernetes_endpoint_node_name
+      targetLabel: node
+    - targetLabel: component
+      replacement: kubelet-resource
+    metricRelabelings:
+    - sourceLabels:
+      - __name__
+      - namespace
+      - container
+      separator: ;
+      regex: container_memory_working_set_bytes;kube-system;(aws-node|aws-eks-nodeagent)
+      action: keep
+    - sourceLabels:
+      - container
+      regex: aws-node
+      targetLabel: component
+      replacement: ipamd
+    - sourceLabels:
+      - container
+      regex: aws-eks-nodeagent
+      targetLabel: component
+      replacement: npa

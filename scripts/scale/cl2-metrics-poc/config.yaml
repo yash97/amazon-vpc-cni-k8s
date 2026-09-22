@@ -1,0 +1,111 @@
+{{$EXPECTED_LINUX_NODES := DefaultParam .CL2_EXPECTED_LINUX_NODES .Nodes}}
+{{$BASELINE_SETTLE := DefaultParam .CL2_POC_BASELINE_SETTLE "45s"}}
+{{$SCRAPE_SETTLE := DefaultParam .CL2_POC_SCRAPE_SETTLE "90s"}}
+{{$COMPONENT := DefaultParam .CL2_DATAPLANE_COMPONENT "ipamd"}}
+
+name: dataplane-metric-assertions-poc
+namespace:
+  number: 1
+  prefix: dataplane-metrics-poc
+  deleteStaleNamespaces: true
+  deleteAutomanagedNamespaces: true
+steps:
+- name: Seed the pre-test baseline window
+  measurements:
+  - Identifier: BaselineSettle
+    Method: Sleep
+    Params:
+      duration: {{$BASELINE_SETTLE}}
+- name: Start per-node metric assertions
+  measurements:
+  - Identifier: DataplaneMetricCoverage
+    Method: GenericPrometheusQuery
+    Params:
+      action: start
+      metricName: {{$COMPONENT}} per-node metric coverage
+      metricVersion: v1
+      unit: count
+      dimensions:
+      - node
+      queries:
+      - name: Ready scrape target count delta
+        query: abs((count(count by (node) (up{component="{{$COMPONENT}}"} == 1)) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Process metric node count delta
+        query: abs((count(count by (node) (process_start_time_seconds{component="{{$COMPONENT}}"})) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Working-set metric node count delta
+        query: abs((count(count by (node) (container_memory_working_set_bytes{component="{{$COMPONENT}}"})) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Baseline working-set node count delta
+        query: abs((count(count by (node) (avg_over_time(container_memory_working_set_bytes{component="{{$COMPONENT}}"}[30s] offset %v))) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Scrape target readiness deficit by node
+        query: clamp_min(1 - max by (node) (up{component="{{$COMPONENT}}"}), 0)
+        threshold: 0
+        requireSamples: true
+      - name: Working-set presence deficit by node
+        query: clamp_min(1 - max by (node) (container_memory_working_set_bytes{component="{{$COMPONENT}}"}), 0)
+        threshold: 0
+        requireSamples: true
+      - name: Process restarts during observation by node
+        query: sum by (node) (changes(process_start_time_seconds{component="{{$COMPONENT}}"}[%v]))
+        threshold: 0
+        requireSamples: true
+      - name: Scrape target identity changes by node
+        query: clamp_min(count by (node) (max_over_time(up{component="{{$COMPONENT}}"}[%v])) - 1, 0)
+        threshold: 0
+        requireSamples: true
+      - name: Working-set recovery excess by node
+        query: clamp_min(max by (node) (avg_over_time(container_memory_working_set_bytes{component="{{$COMPONENT}}"}[30s])) - max by (node) (avg_over_time(container_memory_working_set_bytes{component="{{$COMPONENT}}"}[30s] offset %v)) - clamp_min(max by (node) (avg_over_time(container_memory_working_set_bytes{component="{{$COMPONENT}}"}[30s] offset %v)) * 0.10, 33554432), 0)
+        threshold: 0
+        requireSamples: true
+      - name: Node evidence adapter count delta
+        query: abs((count(count by (node) (dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence"})) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Node evidence adapter staleness by node
+        query: clamp_min(time() - max by (node) (dataplane_node_evidence_refresh_timestamp_seconds{component="node-evidence"}) - 45, 0)
+        threshold: 0
+        requireSamples: true
+      {{if eq $COMPONENT "ipamd"}}
+      - name: Containerd adapter node count delta
+        query: abs((count(count by (node) (dataplane_containerd_scrape_success{component="containerd"} == 1)) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Containerd operation metric node count delta
+        query: abs((count(count by (node) (containerd_cri_network_plugin_operations_total_total{component="containerd"})) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      {{end}}
+      {{if eq $COMPONENT "npa"}}
+      - name: Recovery BPF snapshot node count delta
+        query: abs((count(count by (node) (min_over_time(dataplane_npa_bpf_snapshot_success{component="npa-bpf"}[30s]) == 1)) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Baseline BPF snapshot node count delta
+        query: abs((count(count by (node) (min_over_time(dataplane_npa_bpf_snapshot_success{component="npa-bpf"}[30s] offset %v) == 1)) or vector(0)) - {{$EXPECTED_LINUX_NODES}})
+        threshold: 0
+        requireSamples: true
+      - name: Residual BPF pin identity count
+        query: count(max by (node, kind, pin_hash) (max_over_time(dataplane_npa_bpf_pin_present{component="npa-bpf"}[30s])) unless on (node, kind, pin_hash) max by (node, kind, pin_hash) (max_over_time(dataplane_npa_bpf_pin_present{component="npa-bpf"}[30s] offset %v))) or vector(0)
+        threshold: 0
+        requireSamples: true
+      {{end}}
+- name: Wait for multiple Prometheus scrapes
+  measurements:
+  - Identifier: ScrapeSettle
+    Method: Sleep
+    Params:
+      duration: {{$SCRAPE_SETTLE}}
+- name: Evaluate per-node metric assertions
+  measurements:
+  - Identifier: DataplaneMetricCoverage
+    Method: GenericPrometheusQuery
+    Params:
+      action: gather
+      enableViolations: true
